@@ -109,7 +109,7 @@ struct FastAnalysisPlugin final : plugmod_t {
             m_target_text_section_bytes.size(),
             segment->start_ea);
 
-        text_start_ea = segment->start_ea;
+        m_text_start_ea = segment->start_ea;
 
         auto end_time = std::chrono::high_resolution_clock::now();
 
@@ -140,13 +140,13 @@ struct FastAnalysisPlugin final : plugmod_t {
 
             if (i != numThreads - 1) {
                 // make sure we aren't cutting into the middle of an instruction
-                auto original_ea = reinterpret_cast<ea_t>(division_end - m_target_text_section_bytes.data() + text_start_ea);
+                ea_t original_ea = division_end - m_target_text_section_bytes.data() + m_text_start_ea;
                 ea_t n = next_not_tail(original_ea);
                 division_end += n - original_ea;
             }
 
-            threads.emplace_back(std::async(std::launch::async, [&] {
-                return RefScanner::find_write_drefs(RefScanner::X86_64, text_start_ea,
+            threads.emplace_back(std::async(std::launch::async, [virtual_base_addr = m_text_start_ea, division_begin, division_end] {
+                return RefScanner::find_write_drefs(RefScanner::X86_64, virtual_base_addr,
                     division_begin, division_end);
             }));
 
@@ -172,7 +172,7 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool m_initialized_hooks = false;
     bool m_scanned_for_refs = false;
 
-    ea_t text_start_ea{};
+    ea_t m_text_start_ea{};
 
     std::optional<hat::process::module> m_mod;
     std::vector<std::byte> m_target_text_section_bytes;
@@ -195,8 +195,7 @@ struct FastAnalysisPlugin final : plugmod_t {
 };
 
 plugmod_t* idaapi init() {
-    FastAnalysisPlugin::SINGLETON = new FastAnalysisPlugin;
-    return FastAnalysisPlugin::SINGLETON;
+    return FastAnalysisPlugin::SINGLETON = new FastAnalysisPlugin;
 }
 
 __declspec(dllexport) plugin_t PLUGIN = {

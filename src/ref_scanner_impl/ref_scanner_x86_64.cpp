@@ -2,7 +2,7 @@
 #include "hde64.h"
 
 std::unordered_set<uintptr_t> RefScanner_x86_64::find_write_drefs(uintptr_t virtual_base_addr, const std::byte* begin, const std::byte* end) {
-    std::unordered_set<uintptr_t> writeRefsSet;
+    std::unordered_set<uintptr_t> write_refs_to;
 
     for (const std::byte* ptr = begin; ptr < end;) {
         hde64s insn;
@@ -27,12 +27,12 @@ std::unordered_set<uintptr_t> RefScanner_x86_64::find_write_drefs(uintptr_t virt
                 ptrdiff_t diff = ptr - begin;
 
                 auto referencedAddr = virtual_base_addr + diff + insn.len + insn.disp.disp32;
-                writeRefsSet.insert(referencedAddr);
+                write_refs_to.insert(referencedAddr);
             }
         }
 
         ptr += insn.len;
     }
 
-    return writeRefsSet;
+    return write_refs_to;
 }
