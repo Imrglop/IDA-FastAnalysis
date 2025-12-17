@@ -18,23 +18,25 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-        minhook
-        GIT_REPOSITORY https://github.com/TsudaKageyu/minhook
-        GIT_TAG v1.3.4
+        safetyhook
+        GIT_REPOSITORY https://github.com/cursey/safetyhook
+        GIT_TAG v0.6.9
 )
 
-FetchContent_MakeAvailable(idasdk libhat minhook)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+FetchContent_MakeAvailable(idasdk libhat safetyhook)
 
 add_library(fastanalysis SHARED
         src/main.cpp
         src/ref_scanner_impl/ref_scanner_x86_64.cpp
         src/ref_scanner.cpp
+        src/hde/hde64.c
+        src/hde/hde32.c
 )
 
 target_include_directories(fastanalysis PRIVATE
         ${idasdk_SOURCE_DIR}/src/include/
-        # use hde64 source files from MinHook
-        ${minhook_SOURCE_DIR}/src/hde/
 )
 
 target_compile_definitions(fastanalysis PRIVATE
@@ -43,12 +45,14 @@ target_compile_definitions(fastanalysis PRIVATE
 )
 
 target_link_libraries(fastanalysis PRIVATE
-        minhook
+        safetyhook
         libhat
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     target_link_libraries(fastanalysis PRIVATE ${idasdk_SOURCE_DIR}/src/lib/x64_win_vc_64/ida.lib)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(fastanalysis PRIVATE ${idasdk_SOURCE_DIR}/src/lib/x64_linux_gcc_64/libida.so)
 else()
     message(FATAL_ERROR "${CMAKE_SYSTEM_NAME} is unsupported")
 endif()

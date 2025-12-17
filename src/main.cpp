@@ -1,7 +1,9 @@
 
 #include <chrono>
+#include <dlfcn.h>
+#include <filesystem>
 #include <future>
-#include <MinHook.h>
+#include <safetyhook.hpp>
 #include <unordered_set>
 #include <libhat.hpp>
 
@@ -16,6 +18,7 @@ struct FastAnalysisPlugin final : plugmod_t {
 
     FastAnalysisPlugin() {
         get_proc_module();
+        msg("filepath is is %s\n", std::filesystem::current_path().string().c_str());
 
         if (!m_mod) {
             msg("FastAnalysis is not supported for this target!\n");
@@ -43,16 +46,37 @@ struct FastAnalysisPlugin final : plugmod_t {
 
     void get_proc_module() {
         if (inf_get_procname() == "metapc") {
+#ifdef WIN32
             m_mod = hat::process::get_module("pc.dll");
+#elifdef __linux__
+            m_mod = hat::process::get_module("pc.so");
+#endif
         }
     }
 
     bool init_hooks() {
         m_initialized_hooks = true;
-        MH_Initialize();
+        auto pattern = hat::compile_signature<
+#ifdef WIN32
+       "48 83 ec ? 48 8b 05 ? ? ? ? 48 33 c4 48 89 44 24 38 41 b8 02 00 00 00"
+#elifdef __linux__
+#error Linux is not supported
 
-        auto pattern = hat::compile_signature<"48 83 ec ? 48 8b 05 ? ? ? ? 48 33 c4 48 89 44 24 38 41 b8 02 00 00 00">();
-        hat::scan_result result = hat::find_pattern(pattern, ".text", *m_mod,
+        // Looks like it might be this
+        "55 53 48 83 ec ? 64 48 8b 14 25 ? 00 00 00 48 89 54 ? ? ba 02"
+#endif
+        >();
+
+        m_mod->for_each_segment([this](std::span<std::byte> section, hat::protection protection) {
+            if (static_cast<bool>(protection & hat::protection::Execute)) {
+                m_mod_text_section = section;
+                return false;
+            }
+
+            return true;
+        });
+
+        hat::scan_result result = hat::find_pattern(m_mod_text_section, pattern,
             hat::scan_alignment::X16, hat::scan_hint::x86_64);
 
         if (!result.has_result()) {
@@ -60,24 +84,12 @@ struct FastAnalysisPlugin final : plugmod_t {
             return false;
         }
 
-        auto target = reinterpret_cast<void*>(&metapc_has_write_dref_hook);
-        auto status = MH_CreateHook(result.get(),
-            target,
-            &return_metapc_has_dref);
+        m_has_write_dref_hook = safetyhook::create_inline(result.get(), metapc_has_write_dref_hook);
 
-        if (status != MH_OK) {
-            msg("FastAnalysis: Failed to create hook, %s\n",
-                MH_StatusToString(status));
+        auto enable_result = m_has_write_dref_hook.enable();
 
-            return false;
-        }
-
-        status = MH_EnableHook(result.get());
-
-        if (status != MH_OK) {
-            msg("FastAnalysis: Failed to enable hook, %s\n",
-                MH_StatusToString(status));
-
+        if (!enable_result.has_value()) {
+            warning("Failed to enable hook, FastAnalysis will not function");
             return false;
         }
 
@@ -86,12 +98,6 @@ struct FastAnalysisPlugin final : plugmod_t {
 
     void deinit_hooks() {
         std::unique_lock lock{m_hook_mutex};
-
-        MH_STATUS status = MH_DisableHook(MH_ALL_HOOKS);
-        if (status != MH_OK) {
-            msg("FastAnalysis: Failed to disable hook, %s\n",
-                MH_StatusToString(status));
-        }
     }
 
     bool get_target_text_section_bytes() {
@@ -122,12 +128,12 @@ struct FastAnalysisPlugin final : plugmod_t {
             return;
 
         // TODO: make this a setting
-        static constexpr int numThreads = 24;
+        uint32_t num_threads = std::thread::hardware_concurrency();
 
         get_target_text_section_bytes();
 
         size_t section_size = m_target_text_section_bytes.size();
-        size_t size_per_division = section_size / numThreads;
+        size_t size_per_division = section_size / num_threads;
 
         auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -135,10 +141,10 @@ struct FastAnalysisPlugin final : plugmod_t {
 
         std::byte* division_begin = m_target_text_section_bytes.data();
 
-        for (int i = 0; i < numThreads; i++) {
+        for (int i = 0; i < num_threads; i++) {
             std::byte* division_end = division_begin + size_per_division;
 
-            if (i != numThreads - 1) {
+            if (i != num_threads - 1) {
                 // make sure we aren't cutting into the middle of an instruction
                 ea_t original_ea = division_end - m_target_text_section_bytes.data() + m_text_start_ea;
                 ea_t n = next_not_tail(original_ea);
@@ -172,11 +178,14 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool m_initialized_hooks = false;
     bool m_scanned_for_refs = false;
 
-    ea_t m_text_start_ea{};
-
+    safetyhook::InlineHook m_has_write_dref_hook{};
     std::optional<hat::process::module> m_mod;
+    std::span<std::byte> m_mod_text_section;
+
     std::vector<std::byte> m_target_text_section_bytes;
     std::unordered_set<uintptr_t> m_write_drefs_to;
+    ea_t m_text_start_ea{};
+
     std::mutex m_hook_mutex;
 
     inline static void* return_metapc_has_dref = nullptr;
@@ -198,7 +207,7 @@ plugmod_t* idaapi init() {
     return FastAnalysisPlugin::SINGLETON = new FastAnalysisPlugin;
 }
 
-__declspec(dllexport) plugin_t PLUGIN = {
+plugin_t PLUGIN = {
     IDP_INTERFACE_VERSION,
     PLUGIN_MULTI,
     init,
