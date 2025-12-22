@@ -1,6 +1,8 @@
 
 #include <chrono>
+#ifdef __linux__
 #include <dlfcn.h>
+#endif
 #include <filesystem>
 #include <future>
 #include <safetyhook.hpp>
