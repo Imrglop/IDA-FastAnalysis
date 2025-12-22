@@ -26,8 +26,8 @@ std::unordered_set<uintptr_t> RefScanner_x86_64::find_write_drefs(uintptr_t virt
             if (is_mov_to_mem && mod == 0 && rm == 5) {
                 ptrdiff_t diff = ptr - begin;
 
-                auto referencedAddr = virtual_base_addr + diff + insn.len + insn.disp.disp32;
-                write_refs_to.insert(referencedAddr);
+                auto referenced_addr = virtual_base_addr + diff + insn.len + insn.disp.disp32;
+                write_refs_to.insert(referenced_addr);
             }
         }
 
