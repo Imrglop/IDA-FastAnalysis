@@ -5,7 +5,8 @@
 
 struct RefScanner {
     enum Arch {
-        X86_64
+        X86_64,
+        AARCH64
     };
 
     static std::unordered_set<uintptr_t> find_write_drefs(Arch arch, uintptr_t virtual_base_addr, std::byte* begin, std::byte* end);

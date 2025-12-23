@@ -29,6 +29,7 @@ FetchContent_MakeAvailable(idasdk libhat safetyhook)
 
 add_library(fastanalysis SHARED
         src/main.cpp
+        src/ref_scanner_impl/ref_scanner_aarch64.cpp
         src/ref_scanner_impl/ref_scanner_x86_64.cpp
         src/ref_scanner.cpp
         src/hde/hde64.c

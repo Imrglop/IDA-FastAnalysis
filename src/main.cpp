@@ -19,18 +19,42 @@ struct FastAnalysisPlugin final : plugmod_t {
     inline static FastAnalysisPlugin* SINGLETON{};
 
     FastAnalysisPlugin() {
+        bool is_arm = false;
+
         if (inf_get_procname() == "metapc") {
 #ifdef WIN32
             m_mod = hat::process::get_module("pc.dll");
 #elifdef __linux__
             m_mod = hat::process::get_module("pc.so");
 #endif
+        } else if (inf_get_procname() == "ARM") {
+            is_arm = true;
+
+            // the function we need to hook for ARM is just in ida.dll, weirdly enough
+            m_mod = hat::process::get_module("ida.dll");
         } else {
-            msg("FastAnalysis is not supported for this target!\n");
+            msg("FastAnalysis is not supported for this target: %s\n", inf_get_procname().c_str());
             return;
         }
 
-        init_metapc_hooks();
+
+        m_mod->for_each_segment([this](std::span<std::byte> section, hat::protection protection) {
+           if (static_cast<bool>(protection & hat::protection::Execute)) {
+               m_mod_text_section = section;
+               return false;
+           }
+
+           return true;
+       });
+
+        bool result;
+        if (is_arm)
+            result = init_arm_hooks();
+        else
+            result = init_metapc_hooks();
+
+        if (result)
+            m_active = true;
     }
 
     ~FastAnalysisPlugin() override = default;
@@ -42,6 +66,29 @@ struct FastAnalysisPlugin final : plugmod_t {
             info("FastAnalysis is active\n");
         else
             info("FastAnalysis is not active\n");
+
+        return true;
+    }
+
+    bool init_arm_hooks() {
+        auto pattern = hat::compile_signature<"48 83 ec ? 48 8b 05 ? ? ? ? 48 33 c4 48 89 44 24 38 48 8b d1 41 b8 02">();
+
+        hat::scan_result result = hat::find_pattern(m_mod_text_section, pattern,
+            hat::scan_alignment::X16, hat::scan_hint::x86_64);
+
+        if (!result.has_result()) {
+            warning("FastAnalysis may not support this IDA version (signature result not found)\n");
+            return false;
+        }
+
+        m_arm_has_write_dref_hook = safetyhook::create_inline(result.get(), arm_has_write_dref_hook);
+
+        auto enable_result = m_arm_has_write_dref_hook.enable();
+
+        if (!enable_result.has_value()) {
+            warning("Failed to enable hook, FastAnalysis will not function");
+            return false;
+        }
 
         return true;
     }
@@ -58,15 +105,6 @@ struct FastAnalysisPlugin final : plugmod_t {
 #endif
         >();
 
-        m_mod->for_each_segment([this](std::span<std::byte> section, hat::protection protection) {
-            if (static_cast<bool>(protection & hat::protection::Execute)) {
-                m_mod_text_section = section;
-                return false;
-            }
-
-            return true;
-        });
-
         hat::scan_result result = hat::find_pattern(m_mod_text_section, pattern,
             hat::scan_alignment::X16, hat::scan_hint::x86_64);
 
@@ -75,9 +113,9 @@ struct FastAnalysisPlugin final : plugmod_t {
             return false;
         }
 
-        m_has_write_dref_hook = safetyhook::create_inline(result.get(), metapc_has_write_dref_hook);
+        m_metapc_has_write_dref_hook = safetyhook::create_inline(result.get(), metapc_has_write_dref_hook);
 
-        auto enable_result = m_has_write_dref_hook.enable();
+        auto enable_result = m_metapc_has_write_dref_hook.enable();
 
         if (!enable_result.has_value()) {
             warning("Failed to enable hook, FastAnalysis will not function");
@@ -130,20 +168,21 @@ struct FastAnalysisPlugin final : plugmod_t {
         return true;
     }
 
-    void scan_for_refs() {
+    void scan_for_refs(bool is_arm) {
         if (m_scanned_for_refs)
             return;
 
-        uint32_t num_threads = std::thread::hardware_concurrency();
 
         if (!get_target_text_section_bytes()) {
             msg("FastAnalysis: Failed to get target text section bytes\n");
+            m_active = false;
             return;
         }
 
-        m_active = true;
 
         size_t section_size = m_target_text_section_bytes.size();
+
+        uint32_t num_threads = std::thread::hardware_concurrency();
         size_t size_per_division = section_size / num_threads;
 
         auto start_time = std::chrono::high_resolution_clock::now();
@@ -163,7 +202,7 @@ struct FastAnalysisPlugin final : plugmod_t {
             }
 
             threads.emplace_back(std::async(std::launch::async, [=, text_start = m_text_start_ea] {
-                return RefScanner::find_write_drefs(RefScanner::X86_64, text_start + i * size_per_division,
+                return RefScanner::find_write_drefs(is_arm ? RefScanner::AARCH64 : RefScanner::X86_64, text_start + i * size_per_division,
                     division_begin, division_end);
             }));
 
@@ -177,7 +216,7 @@ struct FastAnalysisPlugin final : plugmod_t {
 
         auto end_time = std::chrono::high_resolution_clock::now();
 
-        msg("FastAnalysis: finding %d write drefs took %d ms\n", m_write_drefs_to.size(),
+        msg("FastAnalysis (%s): finding %d write drefs took %d ms\n", is_arm ? "arm64" : "x86-64", m_write_drefs_to.size(),
             std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count());
 
         m_scanned_for_refs = true;
@@ -189,7 +228,8 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool m_active = false;
     bool m_scanned_for_refs = false;
 
-    safetyhook::InlineHook m_has_write_dref_hook{};
+    safetyhook::InlineHook m_metapc_has_write_dref_hook{};
+    safetyhook::InlineHook m_arm_has_write_dref_hook{};
     std::optional<hat::process::module> m_mod;
     std::span<std::byte> m_mod_text_section;
 
@@ -197,17 +237,28 @@ struct FastAnalysisPlugin final : plugmod_t {
     std::unordered_set<uintptr_t> m_write_drefs_to;
     ea_t m_text_start_ea{};
 
-    std::mutex m_hook_mutex;
-
     // Checks if there's a write data xref to the target address
     static bool metapc_has_write_dref_hook(void* unknown, ea_t target_addr) {
         auto plugin = SINGLETON;
         if (!plugin->m_active) {
-            return plugin->m_has_write_dref_hook.call<bool>(unknown, target_addr);
+            return plugin->m_metapc_has_write_dref_hook.call<bool>(unknown, target_addr);
         }
 
         if (!plugin->m_scanned_for_refs) {
-            plugin->scan_for_refs();
+            plugin->scan_for_refs(false);
+        }
+
+        return plugin->m_write_drefs_to.contains(target_addr);
+    }
+
+    static bool arm_has_write_dref_hook(ea_t target_addr) {
+        auto plugin = SINGLETON;
+        if (!plugin->m_active) {
+            return plugin->m_arm_has_write_dref_hook.call<bool>(target_addr);
+        }
+
+        if (!plugin->m_scanned_for_refs) {
+            plugin->scan_for_refs(true);
         }
 
         return plugin->m_write_drefs_to.contains(target_addr);
