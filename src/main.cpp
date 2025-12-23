@@ -33,10 +33,7 @@ struct FastAnalysisPlugin final : plugmod_t {
         init_metapc_hooks();
     }
 
-    ~FastAnalysisPlugin() override {
-        if (m_initialized_hooks)
-            deinit_hooks();
-    }
+    ~FastAnalysisPlugin() override = default;
 
     bool run(size_t arg) override {
         // TODO: settings menu
@@ -50,7 +47,6 @@ struct FastAnalysisPlugin final : plugmod_t {
     }
 
     bool init_metapc_hooks() {
-        m_initialized_hooks = true;
         auto pattern = hat::compile_signature<
 #ifdef WIN32
        "48 83 ec ? 48 8b 05 ? ? ? ? 48 33 c4 48 89 44 24 38 41 b8 02 00 00 00"
@@ -91,9 +87,6 @@ struct FastAnalysisPlugin final : plugmod_t {
         return true;
     }
 
-    void deinit_hooks() {
-        std::unique_lock lock{m_hook_mutex};
-    }
 
     bool get_target_text_section_bytes() {
         // TODO: instead, get all sections with executable code and have an option to search the entire binary regardless of whether or not a "text" section is present
@@ -193,7 +186,6 @@ struct FastAnalysisPlugin final : plugmod_t {
         m_target_text_section_bytes.clear();
     }
 
-    bool m_initialized_hooks = false;
     bool m_active = false;
     bool m_scanned_for_refs = false;
 
@@ -207,12 +199,12 @@ struct FastAnalysisPlugin final : plugmod_t {
 
     std::mutex m_hook_mutex;
 
-    inline static void* return_metapc_has_dref = nullptr;
-
     // Checks if there's a write data xref to the target address
-    static int metapc_has_write_dref_hook(void*, ea_t target_addr) {
+    static bool metapc_has_write_dref_hook(void* unknown, ea_t target_addr) {
         auto plugin = SINGLETON;
-        std::unique_lock lock{plugin->m_hook_mutex};
+        if (!plugin->m_active) {
+            return plugin->m_has_write_dref_hook.call<bool>(unknown, target_addr);
+        }
 
         if (!plugin->m_scanned_for_refs) {
             plugin->scan_for_refs();
