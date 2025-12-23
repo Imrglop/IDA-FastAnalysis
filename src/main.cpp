@@ -162,8 +162,8 @@ struct FastAnalysisPlugin final : plugmod_t {
                 division_end += n - original_ea;
             }
 
-            threads.emplace_back(std::async(std::launch::async, [virtual_base_addr = m_text_start_ea, division_begin, division_end] {
-                return RefScanner::find_write_drefs(RefScanner::X86_64, virtual_base_addr,
+            threads.emplace_back(std::async(std::launch::async, [=, text_start = m_text_start_ea] {
+                return RefScanner::find_write_drefs(RefScanner::X86_64, text_start + i * size_per_division,
                     division_begin, division_end);
             }));
 
