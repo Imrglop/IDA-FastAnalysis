@@ -19,15 +19,18 @@ struct FastAnalysisPlugin final : plugmod_t {
     inline static FastAnalysisPlugin* SINGLETON{};
 
     FastAnalysisPlugin() {
-        get_proc_module();
-        msg("filepath is is %s\n", std::filesystem::current_path().string().c_str());
-
-        if (!m_mod) {
+        if (inf_get_procname() == "metapc") {
+#ifdef WIN32
+            m_mod = hat::process::get_module("pc.dll");
+#elifdef __linux__
+            m_mod = hat::process::get_module("pc.so");
+#endif
+        } else {
             msg("FastAnalysis is not supported for this target!\n");
             return;
         }
 
-        init_hooks();
+        init_metapc_hooks();
     }
 
     ~FastAnalysisPlugin() override {
@@ -38,7 +41,7 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool run(size_t arg) override {
         // TODO: settings menu
 
-        if (m_initialized_hooks)
+        if (m_active)
             info("FastAnalysis is active\n");
         else
             info("FastAnalysis is not active\n");
@@ -46,17 +49,7 @@ struct FastAnalysisPlugin final : plugmod_t {
         return true;
     }
 
-    void get_proc_module() {
-        if (inf_get_procname() == "metapc") {
-#ifdef WIN32
-            m_mod = hat::process::get_module("pc.dll");
-#elifdef __linux__
-            m_mod = hat::process::get_module("pc.so");
-#endif
-        }
-    }
-
-    bool init_hooks() {
+    bool init_metapc_hooks() {
         m_initialized_hooks = true;
         auto pattern = hat::compile_signature<
 #ifdef WIN32
@@ -103,21 +96,40 @@ struct FastAnalysisPlugin final : plugmod_t {
     }
 
     bool get_target_text_section_bytes() {
+        // TODO: instead, get all sections with executable code and have an option to search the entire binary regardless of whether or not a "text" section is present
+
         segment_t* segment = get_segm_by_name(".text");
 
         if (segment == nullptr)
-            return false;
+            segment = get_segm_by_name("__text");
 
-        msg("FastAnalysis: Getting %lld bytes from IDA\n", segment->size());
-        m_target_text_section_bytes.resize(segment->size());
+        ea_t min_ea = inf_get_min_ea();
+        size_t binary_size = inf_get_max_ea() - min_ea;
+
+        if (segment == nullptr) {
+            msg("FastAnalysis may not support this target: Could not find .text section or equivalent\n");
+            bool yes = ask_yn(ASKBTN_NO, "FastAnalysis may not support this target, as no .text section or equivalent has been found."
+                "\nFastAnalysis can attempt to use the entire binary instead for code analysis."
+                "\nDo you want FastAnalysis to use the entire binary?");
+
+            if (!yes) {
+                return false;
+            }
+        } else {
+            min_ea = segment->start_ea;
+            binary_size = segment->size();
+        }
+
+        msg("FastAnalysis: Getting %lld bytes from IDA\n", binary_size);
 
         auto start_time = std::chrono::high_resolution_clock::now();
+        m_target_text_section_bytes.resize(binary_size);
 
         get_bytes(m_target_text_section_bytes.data(),
-            m_target_text_section_bytes.size(),
-            segment->start_ea);
+            binary_size,
+            min_ea);
 
-        m_text_start_ea = segment->start_ea;
+        m_text_start_ea = min_ea;
 
         auto end_time = std::chrono::high_resolution_clock::now();
 
@@ -129,10 +141,14 @@ struct FastAnalysisPlugin final : plugmod_t {
         if (m_scanned_for_refs)
             return;
 
-        // TODO: make this a setting
         uint32_t num_threads = std::thread::hardware_concurrency();
 
-        get_target_text_section_bytes();
+        if (!get_target_text_section_bytes()) {
+            msg("FastAnalysis: Failed to get target text section bytes\n");
+            return;
+        }
+
+        m_active = true;
 
         size_t section_size = m_target_text_section_bytes.size();
         size_t size_per_division = section_size / num_threads;
@@ -178,6 +194,7 @@ struct FastAnalysisPlugin final : plugmod_t {
     }
 
     bool m_initialized_hooks = false;
+    bool m_active = false;
     bool m_scanned_for_refs = false;
 
     safetyhook::InlineHook m_has_write_dref_hook{};
