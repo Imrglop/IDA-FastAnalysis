@@ -1,13 +1,19 @@
 # IDA-FastAnalysis
 
-A (WIP) **IDA 9.2** plugin that speeds up the initial binary auto analysis through caching and multithreaded analysis.
+A (WIP) IDA **9.x, 8.x** plugin that speeds up the initial binary auto analysis through caching and multithreaded analysis.
 
-Currently, this plugin for the Windows version of [IDA Pro](https://hex-rays.com/ida-pro) supports the analysis of x64 (x86-64) binaries.
+Below represents where optimizations by IDA-FastAnalysis can currently be applied:
+
+
+| IDA Version | Supported targets |
+|-------------|-------------------|
+| 9.x         | x64, ARM64        |
+| 8.x         | x64               |
 
 ## TODO
-- [ ] ARM64 support
 - [ ] Support for Linux versions of IDA
-- [ ] Compile a test binary for benchmarks
+- [ ] "Sanity check" to ensure disassembly isn't affected
+- [ ] Designate a test binary for benchmarks
 
 ## How it works
 
@@ -27,7 +33,7 @@ bool has_write_dref(ea_t target_addr) {
     if (!xb.first_to(target_addr, XREF_FLOW))
         return false;
     
-    // Keeps scanning until a DATA_XREF is found
+    // Keeps scanning until a DATA xref is found
     // that writes to the target address 
     while (xb.type != dr_W) {
         if (!xb.next_to())
@@ -38,6 +44,12 @@ bool has_write_dref(ea_t target_addr) {
 }
 ```
 
-IDA-FastAnalysis overrides this functionality and instead creates a pre-computed set of all addresses that have a write xref to them, resulting in significantly faster analysis speeds (up to 200x faster during some of the most intensive analysis stages, like `AC` and `FL`!) 
+IDA-FastAnalysis overrides this functionality and instead creates a pre-computed set of all addresses that have a write xref to them, resulting in significantly faster analysis speeds (up to 200x faster during some of the most intensive analysis stages for x64 targets!)
 
 
+
+## Building
+
+To build for IDA 8.x, the environment variable `IDA_8_SDK` must be defined. It must point to a directory with `lib` and `include` directories and contents from your IDA SDK installation.
+
+If `IDA_8_SDK` is not defined, only the 9.x version can be built.

@@ -23,7 +23,11 @@ struct FastAnalysisPlugin final : plugmod_t {
 
         if (inf_get_procname() == "metapc") {
 #ifdef WIN32
+#ifdef IDA_8
+            m_mod = hat::process::get_module("pc64.dll");
+#else
             m_mod = hat::process::get_module("pc.dll");
+#endif
 #elifdef __linux__
             m_mod = hat::process::get_module("pc.so");
 #endif
@@ -31,12 +35,15 @@ struct FastAnalysisPlugin final : plugmod_t {
             is_arm = true;
 
             // the function we need to hook for ARM is just in ida.dll, weirdly enough
+#ifndef IDA_8
             m_mod = hat::process::get_module("ida.dll");
-        } else {
+#endif
+        }
+
+        if (!m_mod) {
             msg("FastAnalysis is not supported for this target: %s\n", inf_get_procname().c_str());
             return;
         }
-
 
         m_mod->for_each_segment([this](std::span<std::byte> section, hat::protection protection) {
            if (static_cast<bool>(protection & hat::protection::Execute)) {
@@ -96,7 +103,11 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool init_metapc_hooks() {
         auto pattern = hat::compile_signature<
 #ifdef WIN32
+#ifdef IDA_8
+       "40 53 48 83 EC ? 48 8b 05 ? ? ? ? 48 33 C4 48 89 44 24 38"
+#else
        "48 83 ec ? 48 8b 05 ? ? ? ? 48 33 c4 48 89 44 24 38 41 b8 02 00 00 00"
+#endif
 #elifdef __linux__
 #error Linux is not supported
 
