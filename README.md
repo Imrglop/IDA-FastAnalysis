@@ -18,10 +18,10 @@ Below represents where optimizations by IDA-FastAnalysis can currently be applie
 ## How it works
 
 ### Optimization #1: Write xref lookups
-For unknown reasons, IDA frequently searches for write-to-data cross references throughout the entire target binary in some stages of auto analysis.
-This process takes a significant amount of time, slowing down analysis, especially for large binary files (~50MB+).
+In the function `reg_finder_emulate_mem_read`, IDA repeatedly searches for write-to-data cross references throughout the entire target binary in some stages of auto analysis, to check if a value at a certain address is a constant.
+This process takes a significant amount of time, slowing down analysis, especially for large binary files (~50MB+)
 
-Rough pseudocode:
+Below is a rough pseudocode of the function called by `emulate_mem_read`. It is called mostly for the same few addresses during analysis (like the security cookie in many programs).
 
 ```c++
 // Scans target binary looking for a data write xref to
