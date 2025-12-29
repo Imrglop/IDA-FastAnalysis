@@ -79,7 +79,7 @@ struct FastAnalysisPlugin final : plugmod_t {
 #endif
 
         if (get_bytes_addr)
-            //m_get_bytes_hook = safetyhook::create_inline(get_bytes_addr, get_bytes_hook);
+            m_get_bytes_hook = safetyhook::create_inline(get_bytes_addr, get_bytes_hook);
 
         if (result)
             m_active = true;
