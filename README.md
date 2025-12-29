@@ -46,7 +46,11 @@ bool has_write_dref(ea_t target_addr) {
 
 IDA-FastAnalysis overrides this functionality and instead creates a pre-computed set of all addresses that have a write xref to them, resulting in significantly faster analysis speeds (up to 200x faster during some of the most intensive analysis stages for x64 targets!)
 
+### Optimization #2: `get_bytes`
+Overrides the internal functionality of `get_bytes`, another function called frequently during analysis. FastAnalysis caches `.data` and `.rdata` section contents, with special cases for retrieving small 8 and 16-byte buffers for efficiency.
 
+> [!WARNING]  
+> Due to how this optimization currently works, patching the binary while auto analysis is running can lead to corruption or inaccurate disassembly.
 
 ## Building
 

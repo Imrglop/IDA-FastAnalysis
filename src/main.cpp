@@ -2,6 +2,9 @@
 #include <chrono>
 #ifdef __linux__
 #include <dlfcn.h>
+#elifdef WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
 #endif
 #include <filesystem>
 #include <future>
@@ -24,41 +27,59 @@ struct FastAnalysisPlugin final : plugmod_t {
         if (inf_get_procname() == "metapc") {
 #ifdef WIN32
 #ifdef IDA_8
-            m_mod = hat::process::get_module("pc64.dll");
+            m_proc_mod = hat::process::get_module("pc64.dll");
 #else
-            m_mod = hat::process::get_module("pc.dll");
+            m_proc_mod = hat::process::get_module("pc.dll");
 #endif
 #elifdef __linux__
-            m_mod = hat::process::get_module("pc.so");
+            m_proc_mod = hat::process::get_module("pc.so");
 #endif
         } else if (inf_get_procname() == "ARM") {
             is_arm = true;
 
             // the function we need to hook for ARM is just in ida.dll, weirdly enough
 #ifndef IDA_8
-            m_mod = hat::process::get_module("ida.dll");
+            m_proc_mod = hat::process::get_module("ida.dll");
 #endif
         }
 
-        if (!m_mod) {
+#ifdef WIN32
+#ifndef IDA_8
+        m_ida_mod = hat::process::get_module("ida.dll");
+#else
+        m_ida_mod = hat::process::get_module("ida64.dll");
+#endif
+#elifdef __linux__
+        m_ida_mod = hat::process::get_module("ida.so");
+#endif
+
+        if (!m_proc_mod || !m_ida_mod) {
             msg("FastAnalysis is not supported for this target: %s\n", inf_get_procname().c_str());
             return;
         }
 
-        m_mod->for_each_segment([this](std::span<std::byte> section, hat::protection protection) {
+        m_proc_mod->for_each_segment([this](std::span<std::byte> section, hat::protection protection) {
            if (static_cast<bool>(protection & hat::protection::Execute)) {
-               m_mod_text_section = section;
+               m_proc_mod_text_section = section;
                return false;
            }
 
            return true;
-       });
+        });
 
         bool result;
         if (is_arm)
             result = init_arm_hooks();
         else
             result = init_metapc_hooks();
+
+        auto get_bytes_addr =
+#ifdef WIN32
+            reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(m_ida_mod->address()), "get_bytes"));
+#endif
+
+        if (get_bytes_addr)
+            //m_get_bytes_hook = safetyhook::create_inline(get_bytes_addr, get_bytes_hook);
 
         if (result)
             m_active = true;
@@ -80,7 +101,7 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool init_arm_hooks() {
         auto pattern = hat::compile_signature<"48 83 ec ? 48 8b 05 ? ? ? ? 48 33 c4 48 89 44 24 38 48 8b d1 41 b8 02">();
 
-        hat::scan_result result = hat::find_pattern(m_mod_text_section, pattern,
+        hat::scan_result result = hat::find_pattern(m_proc_mod_text_section, pattern,
             hat::scan_alignment::X16, hat::scan_hint::x86_64);
 
         if (!result.has_result()) {
@@ -116,7 +137,7 @@ struct FastAnalysisPlugin final : plugmod_t {
 #endif
         >();
 
-        hat::scan_result result = hat::find_pattern(m_mod_text_section, pattern,
+        hat::scan_result result = hat::find_pattern(m_proc_mod_text_section, pattern,
             hat::scan_alignment::X16, hat::scan_hint::x86_64);
 
         if (!result.has_result()) {
@@ -136,46 +157,46 @@ struct FastAnalysisPlugin final : plugmod_t {
         return true;
     }
 
-
-    bool get_target_text_section_bytes() {
-        // TODO: instead, get all sections with executable code and have an option to search the entire binary regardless of whether or not a "text" section is present
-
-        segment_t* segment = get_segm_by_name(".text");
+    static bool get_section_bytes(const char* name, std::vector<std::byte>& bytes, ea_t& start_ea) {
+        segment_t* segment = get_segm_by_name(name);
 
         if (segment == nullptr)
-            segment = get_segm_by_name("__text");
+            return false;
 
-        ea_t min_ea = inf_get_min_ea();
-        size_t binary_size = inf_get_max_ea() - min_ea;
+        auto min_ea = segment->start_ea;
+        auto binary_size = segment->size();
 
-        if (segment == nullptr) {
-            msg("FastAnalysis may not support this target: Could not find .text section or equivalent\n");
-            bool yes = ask_yn(ASKBTN_NO, "FastAnalysis may not support this target, as no .text section or equivalent has been found."
-                "\nFastAnalysis can attempt to use the entire binary instead for code analysis."
-                "\nDo you want FastAnalysis to use the entire binary?");
+        bytes = {};
+        bytes.resize(binary_size);
 
-            if (!yes) {
+        msg("FastAnalysis: Getting %lld bytes from IDA (%s)\n", binary_size, name);
+        auto start_time = std::chrono::high_resolution_clock::now();
+        ssize_t res = get_bytes(bytes.data(),
+            static_cast<ssize_t>(binary_size),
+            min_ea);
+        auto end_time = std::chrono::high_resolution_clock::now();
+        msg("FastAnalysis: Took %d ms\n", std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count());
+
+        //assert(res == binary_size);
+
+        start_ea = segment->start_ea;
+
+        return true;
+    }
+
+    bool get_target_sections_bytes() {
+        // TODO: instead, get all sections with executable code and have an option to search the entire binary regardless of whether or not a "text" section is present
+
+        if (!get_section_bytes(".text", m_target_text_section_bytes, m_text_start_ea)) {
+            if (!get_section_bytes("__text", m_target_text_section_bytes, m_text_start_ea)) {
+                msg("FastAnalysis may not support this target: no .text section or equivalent found.\n");
                 return false;
             }
-        } else {
-            min_ea = segment->start_ea;
-            binary_size = segment->size();
         }
 
-        msg("FastAnalysis: Getting %lld bytes from IDA\n", binary_size);
+        get_section_bytes(".rdata", m_target_rdata_section_bytes, m_rdata_start_ea);
+        get_section_bytes(".data", m_target_data_section_bytes, m_data_start_ea);
 
-        auto start_time = std::chrono::high_resolution_clock::now();
-        m_target_text_section_bytes.resize(binary_size);
-
-        get_bytes(m_target_text_section_bytes.data(),
-            binary_size,
-            min_ea);
-
-        m_text_start_ea = min_ea;
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-
-        msg("FastAnalysis: Took %d ms\n", std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count());
         return true;
     }
 
@@ -184,7 +205,7 @@ struct FastAnalysisPlugin final : plugmod_t {
             return;
 
 
-        if (!get_target_text_section_bytes()) {
+        if (!get_target_sections_bytes()) {
             msg("FastAnalysis: Failed to get target text section bytes\n");
             m_active = false;
             return;
@@ -239,14 +260,62 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool m_active = false;
     bool m_scanned_for_refs = false;
 
+    safetyhook::InlineHook m_get_bytes_hook{};
     safetyhook::InlineHook m_metapc_has_write_dref_hook{};
     safetyhook::InlineHook m_arm_has_write_dref_hook{};
-    std::optional<hat::process::module> m_mod;
-    std::span<std::byte> m_mod_text_section;
+    std::optional<hat::process::module> m_proc_mod;
+    std::optional<hat::process::module> m_ida_mod;
+    std::span<std::byte> m_proc_mod_text_section;
+    std::span<std::byte> m_ida_mod_text_section;
 
     std::vector<std::byte> m_target_text_section_bytes;
+    std::vector<std::byte> m_target_rdata_section_bytes;
+    std::vector<std::byte> m_target_data_section_bytes;
     std::unordered_set<uintptr_t> m_write_drefs_to;
     ea_t m_text_start_ea{};
+    ea_t m_data_start_ea{};
+    ea_t m_rdata_start_ea{};
+
+    // TODO: Also hook a function to prevent the user from patching the binary while analysis is happening, so this stays valid
+    static ssize_t get_bytes_hook(void *buf, ssize_t size, ea_t ea, int gmb_flags, void *mask) {
+        auto plugin = SINGLETON;
+
+        // filter out types of calls not used (often) in analysis
+        if ((gmb_flags & GMB_WAITBOX) || mask) {
+            return plugin->m_get_bytes_hook.call<ssize_t>(buf, size, ea, gmb_flags, mask);
+        }
+
+        // check if both bounds are in .rdata section
+        if (ea >= plugin->m_rdata_start_ea && ea + size < plugin->m_rdata_start_ea + plugin->m_target_rdata_section_bytes.size()) {
+            // return a slice of m_all_bytes
+            auto offs = ea - plugin->m_rdata_start_ea;
+
+            if (size == 8) // allow compiler to optimize the memcpy away
+                memcpy(buf, plugin->m_target_rdata_section_bytes.data() + offs, 8);
+            else if (size == 16)
+                memcpy(buf, plugin->m_target_rdata_section_bytes.data() + offs, 16);
+            else
+                memcpy(buf, plugin->m_target_rdata_section_bytes.data() + offs, size);
+
+            return size;
+        }
+
+        if (ea >= plugin->m_data_start_ea && ea < plugin->m_data_start_ea + plugin->m_target_data_section_bytes.size()) {
+            // return a slice of m_all_bytes
+            auto offs = ea - plugin->m_data_start_ea;
+
+            if (size == 8) // allow compiler to optimize the memcpy away
+                memcpy(buf, plugin->m_target_data_section_bytes.data() + offs, 8);
+            else if (size == 16)
+                memcpy(buf, plugin->m_target_data_section_bytes.data() + offs, 16);
+            else
+                memcpy(buf, plugin->m_target_data_section_bytes.data() + offs, size);
+
+            return size;
+        }
+
+        return plugin->m_get_bytes_hook.call<ssize_t>(buf, size, ea, gmb_flags, mask);
+    }
 
     // Checks if there's a write data xref to the target address
     static bool metapc_has_write_dref_hook(void* unknown, ea_t target_addr) {
