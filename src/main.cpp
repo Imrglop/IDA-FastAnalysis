@@ -73,14 +73,6 @@ struct FastAnalysisPlugin final : plugmod_t {
         else
             result = init_metapc_hooks();
 
-        auto get_bytes_addr =
-#ifdef WIN32
-            reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(m_ida_mod->address()), "get_bytes"));
-#endif
-
-        if (get_bytes_addr)
-            m_get_bytes_hook = safetyhook::create_inline(get_bytes_addr, get_bytes_hook);
-
         if (result)
             m_active = true;
     }
@@ -194,9 +186,6 @@ struct FastAnalysisPlugin final : plugmod_t {
             }
         }
 
-        get_section_bytes(".rdata", m_target_rdata_section_bytes, m_rdata_start_ea);
-        get_section_bytes(".data", m_target_data_section_bytes, m_data_start_ea);
-
         return true;
     }
 
@@ -260,7 +249,6 @@ struct FastAnalysisPlugin final : plugmod_t {
     bool m_active = false;
     bool m_scanned_for_refs = false;
 
-    safetyhook::InlineHook m_get_bytes_hook{};
     safetyhook::InlineHook m_metapc_has_write_dref_hook{};
     safetyhook::InlineHook m_arm_has_write_dref_hook{};
     std::optional<hat::process::module> m_proc_mod;
@@ -269,55 +257,11 @@ struct FastAnalysisPlugin final : plugmod_t {
     std::span<std::byte> m_ida_mod_text_section;
 
     std::vector<std::byte> m_target_text_section_bytes;
-    std::vector<std::byte> m_target_rdata_section_bytes;
-    std::vector<std::byte> m_target_data_section_bytes;
     std::unordered_set<uintptr_t> m_write_drefs_to;
     ea_t m_text_start_ea{};
-    ea_t m_data_start_ea{};
-    ea_t m_rdata_start_ea{};
-
-    // TODO: Also hook a function to prevent the user from patching the binary while analysis is happening, so this stays valid
-    static ssize_t get_bytes_hook(void *buf, ssize_t size, ea_t ea, int gmb_flags, void *mask) {
-        auto plugin = SINGLETON;
-
-        // filter out types of calls not used (often) in analysis
-        if ((gmb_flags & GMB_WAITBOX) || mask) {
-            return plugin->m_get_bytes_hook.call<ssize_t>(buf, size, ea, gmb_flags, mask);
-        }
-
-        // check if both bounds are in .rdata section
-        if (ea >= plugin->m_rdata_start_ea && ea + size < plugin->m_rdata_start_ea + plugin->m_target_rdata_section_bytes.size()) {
-            // return a slice of m_all_bytes
-            auto offs = ea - plugin->m_rdata_start_ea;
-
-            if (size == 8) // allow compiler to optimize the memcpy away
-                memcpy(buf, plugin->m_target_rdata_section_bytes.data() + offs, 8);
-            else if (size == 16)
-                memcpy(buf, plugin->m_target_rdata_section_bytes.data() + offs, 16);
-            else
-                memcpy(buf, plugin->m_target_rdata_section_bytes.data() + offs, size);
-
-            return size;
-        }
-
-        if (ea >= plugin->m_data_start_ea && ea < plugin->m_data_start_ea + plugin->m_target_data_section_bytes.size()) {
-            // return a slice of m_all_bytes
-            auto offs = ea - plugin->m_data_start_ea;
-
-            if (size == 8) // allow compiler to optimize the memcpy away
-                memcpy(buf, plugin->m_target_data_section_bytes.data() + offs, 8);
-            else if (size == 16)
-                memcpy(buf, plugin->m_target_data_section_bytes.data() + offs, 16);
-            else
-                memcpy(buf, plugin->m_target_data_section_bytes.data() + offs, size);
-
-            return size;
-        }
-
-        return plugin->m_get_bytes_hook.call<ssize_t>(buf, size, ea, gmb_flags, mask);
-    }
 
     // Checks if there's a write data xref to the target address
+    // This is probably called by some reg_finder_t function
     static bool metapc_has_write_dref_hook(void* unknown, ea_t target_addr) {
         auto plugin = SINGLETON;
         if (!plugin->m_active) {
