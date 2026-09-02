@@ -1,6 +1,7 @@
 #include "ref_scanner_x86_64.h"
 
 
+#include <type_traits>
 #include <idp.hpp>
 #include <Zydis/Zydis.h>
 

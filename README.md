@@ -8,11 +8,11 @@ However, FastAnalysis is still usable for ARM64 on this version.
 Below represents where optimizations by IDA-FastAnalysis can currently be applied:
 
 
-| IDA Version | Supported targets |
-|-------------|-------------------|
-| 9.4, Windows/Linux         | ARM64        |
-| 9.2-9.3, Windows/Linux         | x64, ARM64        |
-| 8.3, Windows         | x64               |
+| IDA Version | IDA Platform                  | Supported targets |
+|-------------|-------------------------------|-------------------|
+| 9.4         | Windows, Linux, Apple Silicon | ARM64             |
+| 9.2-9.3     | Windows, Linux                | x64, ARM64        |
+| 8.3         | Windows                       | x64               |
 
 ## TODO
 - [x] Support for Linux versions of IDA

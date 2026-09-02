@@ -1,7 +1,6 @@
 #include <chrono>
 #include <filesystem>
 #include <future>
-#include <safetyhook.hpp>
 #include <unordered_set>
 #include <libhat.hpp>
 
@@ -14,6 +13,16 @@
 
 // platform and IDA version-specific info, includes sigs
 #include "module_details.h"
+
+#ifndef FA_APPLE_SILICON
+#include <safetyhook.hpp>
+#else
+#include "osx/dobby_hook.h"
+#endif
+
+#ifdef FA_APPLE_SILICON
+using xrefblk_t_first_to_fn = bool (*)(xrefblk_t*, ea_t, int);
+#endif
 
 // IDA's closed source processor for x86_64
 struct pc_t : procmod_t {};
@@ -104,6 +113,22 @@ struct FastAnalysisPlugin final {
         return last_section_size > 0;
     }
 
+#ifdef FA_APPLE_SILICON
+    bool install_xrefblk_hook() {
+        auto* target = reinterpret_cast<void*>(m_ida_mod->get_symbol("xrefblk_t_first_to"));
+        if (target == nullptr) {
+            warning("Failed to resolve xrefblk_t_first_to in libida.dylib");
+            return false;
+        }
+
+        if (m_xrefblk_hook.install(target, reinterpret_cast<void*>(&xrefblk_t_first_to_hook)))
+            return true;
+
+        warning("Failed to install Dobby xrefblk_t_first_to hook (status %d)", m_xrefblk_hook.status());
+        return false;
+    }
+#endif
+
     bool init_arm() {
 #ifdef HOOK_XREFBLK
         m_handle_operand_ret_addrs[0] = hat::find_pattern(m_ida_mod_text_section,
@@ -117,8 +142,13 @@ struct FastAnalysisPlugin final {
             return false;
         }
 
+#if defined(__APPLE__)
+        if (!install_xrefblk_hook())
+            return false;
+#else
         m_xrefblk_hook = safetyhook::create_inline(xrefblk_t_first_to, xrefblk_t_first_to_hook);
         auto enable_result = m_xrefblk_hook.enable();
+#endif
 #else
         auto pattern = hat::compile_signature<arm_hook_sig>();
 
@@ -132,13 +162,14 @@ struct FastAnalysisPlugin final {
 
         m_arm_has_write_dref_hook = safetyhook::create_inline(result.get(), arm_has_write_dref_hook);
 
-
         auto enable_result = m_arm_has_write_dref_hook.enable();
 #endif
+#ifndef HOOK_XREFBLK
         if (!enable_result.has_value()) {
             warning("Failed to enable hook, FastAnalysis will not function");
             return false;
         }
+#endif
 
         return true;
     }
@@ -156,8 +187,13 @@ struct FastAnalysisPlugin final {
             return false;
         }
 
+#if defined(__APPLE__)
+        if (!install_xrefblk_hook())
+            return false;
+#else
         m_xrefblk_hook = safetyhook::create_inline(xrefblk_t_first_to, xrefblk_t_first_to_hook);
         auto enable_result = m_xrefblk_hook.enable();
+#endif
 #else
         auto pattern = hat::compile_signature<metapc_hook_sig>();
 
@@ -172,11 +208,12 @@ struct FastAnalysisPlugin final {
         m_metapc_hook = safetyhook::create_inline(result.get(), metapc_has_write_dref_hook);
         auto enable_result = m_metapc_hook.enable();
 #endif
-
+#ifndef HOOK_XREFBLK
         if (!enable_result.has_value()) {
             warning("Failed to enable hook, FastAnalysis will not function");
             return false;
         }
+#endif
 
         return true;
     }
@@ -326,11 +363,15 @@ struct FastAnalysisPlugin final {
 
 #ifdef HOOK_XREFBLK
     std::array<void*, 2> m_handle_operand_ret_addrs{};
+#if defined(__APPLE__)
+    dobby_hook m_xrefblk_hook{};
+#else
     safetyhook::InlineHook m_xrefblk_hook{};
 #endif
-
+#else
     safetyhook::InlineHook m_metapc_hook{};
     safetyhook::InlineHook m_arm_has_write_dref_hook{};
+#endif
     std::optional<hat::process::module> m_proc_mod;
     std::optional<hat::process::module> m_ida_mod;
     std::span<std::byte> m_proc_mod_text_section;
@@ -340,6 +381,7 @@ struct FastAnalysisPlugin final {
     std::unordered_set<uintptr_t> m_write_drefs_to;
     ea_t m_text_start_ea{};
 
+#ifndef HOOK_XREFBLK
     // Checks if there's a write data xref to the target address
     // where to find this: pc.dll/.so, pc_t vtable -> pc_t::on_event, case ev_emu_insn -> pc_t::emu -> handle_operand
     static bool metapc_has_write_dref_hook(pc_t* proc, ea_t target_addr) {
@@ -369,14 +411,19 @@ struct FastAnalysisPlugin final {
 
         return plugin->m_write_drefs_to.contains(target_addr);
     }
+#endif
 
-    // (linux only)
+    // (linux and Mac only)
     // The above functions are inlined on pc.so, so we instead hook this and check return address
 #ifdef HOOK_XREFBLK
     static bool xrefblk_t_first_to_hook(xrefblk_t* this_, ea_t to, int flags) {
         auto plugin = SINGLETON;
         if (!plugin->m_active) {
+#if defined(__APPLE__)
+            return plugin->m_xrefblk_hook.original<xrefblk_t_first_to_fn>()(this_, to, flags);
+#else
             return plugin->m_xrefblk_hook.call<bool>(this_, to, flags);
+#endif
         }
 
         void* return_address = __builtin_return_address(0);
@@ -398,7 +445,11 @@ struct FastAnalysisPlugin final {
             this_->type = dr_W;
             return true;
         }
+#if defined(__APPLE__)
+        return plugin->m_xrefblk_hook.original<xrefblk_t_first_to_fn>()(this_, to, flags);
+#else
         return plugin->m_xrefblk_hook.call<bool>(this_, to, flags);
+#endif
     }
 #endif
 };

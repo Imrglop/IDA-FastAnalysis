@@ -14,7 +14,13 @@ FetchContent_Declare(
 FetchContent_Declare(
         libhat
         GIT_REPOSITORY https://github.com/BasedInc/libhat.git
-        GIT_TAG v0.9.0
+        GIT_TAG v0.11.0
+)
+
+FetchContent_Declare(
+        Zydis
+        GIT_REPOSITORY https://github.com/zyantific/zydis.git
+        GIT_TAG v4.1.0
 )
 
 FetchContent_Declare(
@@ -23,9 +29,27 @@ FetchContent_Declare(
         GIT_TAG v0.6.9
 )
 
+FetchContent_Declare(
+        Dobby
+        GIT_REPOSITORY https://github.com/AtlasClientMC/Dobby.git
+        GIT_TAG 3fb9fbb16eb2b6278573a6953dde22a26793ba7e
+)
+
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-FetchContent_MakeAvailable(idasdk libhat safetyhook)
+FetchContent_MakeAvailable(idasdk libhat Zydis)
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build Dobby as a static library" FORCE)
+    set(DOBBY_STATIC ON CACHE BOOL "Build Dobby as a static library" FORCE)
+    set(DOBBY_DEBUG OFF CACHE BOOL "Disable Dobby debug logging" FORCE)
+    set(BUILD_EXAMPLE OFF CACHE BOOL "Do not build Dobby examples" FORCE)
+    set(BUILD_TEST OFF CACHE BOOL "Do not build Dobby tests" FORCE)
+    set(Plugin.SymbolResolver ON CACHE BOOL "Build Dobby's symbol resolver" FORCE)
+    FetchContent_MakeAvailable(Dobby)
+else()
+    FetchContent_MakeAvailable(safetyhook)
+endif()
 
 list(APPEND fastanalysis_sources
         src/main.cpp
@@ -48,10 +72,17 @@ target_compile_definitions(fastanalysis PRIVATE
 )
 
 target_link_libraries(fastanalysis PRIVATE
-        safetyhook
         libhat
         Zydis
 )
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_link_libraries(fastanalysis PRIVATE dobby)
+else()
+    target_link_libraries(fastanalysis PRIVATE
+            safetyhook
+    )
+endif()
 
 
 set(IDA_8_SDK_PATH "$ENV{IDA_8_SDK}")
@@ -70,10 +101,15 @@ if(DEFINED ENV{IDA_8_SDK})
     )
 
     target_link_libraries(ida_8_fastanalysis64 PRIVATE
-            safetyhook
             libhat
             zydis
     )
+
+    if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_libraries(ida_8_fastanalysis64 PRIVATE dobby)
+    else()
+        target_link_libraries(ida_8_fastanalysis64 PRIVATE safetyhook)
+    endif()
 
     target_compile_definitions(ida_8_fastanalysis64 PRIVATE
             __EA64__
@@ -93,8 +129,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(DEFINED ENV{IDA_8_SDK})
         target_link_libraries(ida_8_fastanalysis64 PRIVATE "${IDA_8_SDK_PATH}/src/lib/x64_linux_gcc_64_pro/libida64.so")
     endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_link_libraries(fastanalysis PRIVATE "${idasdk_SOURCE_DIR}/src/lib/arm64_mac_clang_64/libida.dylib")
 else()
     message(FATAL_ERROR "${CMAKE_SYSTEM_NAME} is unsupported")
 endif()
-
-
